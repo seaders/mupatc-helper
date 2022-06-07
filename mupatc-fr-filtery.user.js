@@ -4,16 +4,18 @@
 // @match       https://www.flightradar24.com/*
 // @run-at      document-start
 // @grant       GM_addStyle
-// @version     0.42
+// @version     0.43
 // @downloadURL https://raw.githubusercontent.com/seaders/mupatc-helper/main/mupatc-fr-filtery.user.js
-// @uploadURL   https://raw.githubusercontent.com/seaders/mupatc-helper/main/mupatc-fr-filtery.user.js
+// @updateURL   https://raw.githubusercontent.com/seaders/mupatc-helper/main/mupatc-fr-filtery.user.js
+// @license MIT
 // ==/UserScript==
 
 // query_flight_data
 // flight_data_service_cb
 
 function GM_Main() {
-    "use strict";
+    'use strict';
+    'use esversion: 6';
 
     let interesting_airports = [];
     let airport_codes = [];
@@ -37,7 +39,7 @@ function GM_Main() {
         if (!obj) {
             setTimeout(() => doWhen(fn, getter, ignoreSetup), 1);
         } else {
-            // console.log('doing', fn.name);
+            console.log('doing', (ignoreSetup || hasSetup), fn.name);
             fn(obj);
         }
     }
@@ -52,6 +54,14 @@ function GM_Main() {
         return val;
     }
 
+    function toList(s) {
+        return s.toLowerCase().split(",").map(x => x.trim()).filter(x => x);
+    }
+
+    function fromList(l) {
+        return l.filter(x => x).join(',');
+    }
+
     let fixed_lat = _lsGet("rs_fixed_lat", 52),
         fixed_long = _lsGet("rs_fixed_long", 3);
 
@@ -59,7 +69,9 @@ function GM_Main() {
         height = _lsGet("rs_fixed_h", 2.5),
         angle = _lsGet("rs_fixed_rot", 27);
 
-    let na_pref = _lsGet("rs_na_pref", "any");
+    let airport_filter = toList(_lsGet("rs_airport_filter", 'na,ams,bcn,bqh,man'));
+
+    let airport_pref = _lsGet("rs_airport_pref", "");
 
     let all_planes = _lsGet("rs_all_planes") === "true";
     let selected_only = _lsGet("rs_selected_only") === "true";
@@ -159,7 +171,9 @@ function GM_Main() {
             move_ellipse = set_check("rs_move_ellipse", input_drag);
             ellipse_zone = set_check("rs_ellipse_zone", input_ez);
             show_helis = set_check("rs_show_helis", input_helis);
-            na_pref = set_val("rs_na_pref", na_type_select);
+            
+            airport_filter = toList(_lsSet("rs_airport_filter", input_airport.val()));
+            airport_pref = set_val("rs_airport_pref", airport_type_select);
 
             invert_ellipse = input_ie.prop("checked");
             filtered_type = filtered_type_select.val();
@@ -179,9 +193,7 @@ function GM_Main() {
             const _filter_airports = set_check("rs_filter_airports", input_pins);
             if (_filter_airports != filter_airports) {
                 filter_airports = _filter_airports;
-                window.clearMapPins("airport");
-                window.lastRenderPinsCacheKey = null;
-                window.update_static_pins();
+                doAirports();
             }
 
             const _opts_right = _lsSet("rs_opts_right", input_politi.prop("checked"));
@@ -250,9 +262,10 @@ function GM_Main() {
         function createAddInput(label, initial_val, option_type, tr) {
             option_type = option_type || "text";
             const is_checkbox = option_type === "checkbox";
+            const is_textarea = option_type === "textarea";
             const colspan = is_checkbox ? 1 : 2;
 
-            const width = is_checkbox ? "" : "width: 40px;";
+            const width = is_checkbox || is_textarea ? "" : "width: 40px;";
             const input = $(
                 "<input " +
                 'type="' +
@@ -288,25 +301,28 @@ function GM_Main() {
         const input_w = createAddInput("Width", width);
         const input_h = createAddInput("Height", height);
         const input_rot = createAddInput("Angle", angle);
-
+        
+        const input_airport = 
+            createAddInput("Route filter", fromList(airport_filter), 'textarea');
+        
         let tr;
 
         tr = newTr();
-        const na_type_select = $("<select>");
+        const airport_type_select = $("<select>");
         [
             ["", ""],
-            ["any", "Any N/A"],
-            ["both", "Both N/A"],
-            ["source", "Came from N/A"],
-            ["dest", "Going to N/A"],
+            ["source", "Came from List"],
+            ["dest", "Going to List"],
+            ["any", "Any in List"],
+            ["both", "Both in List"],
         ].forEach(([val, title]) =>
-            na_type_select.append(
-                `<option value="${val}" ${val === na_pref ? "selected" : ""
+        airport_type_select.append(
+                `<option value="${val}" ${val === airport_pref ? "selected" : ""
                 }>${title}</option>`
             )
         );
 
-        addInput("Filter Type", na_type_select, tr, 2);
+        addInput("Filter Type", airport_type_select, tr, 2);
 
         tr = newTr();
         const input_only = addCheckbox("Selected Only", selected_only, tr);
@@ -622,40 +638,45 @@ function GM_Main() {
 
     var _airports;
     var _filteredPorts;
+    const KEY_AIRPORT = 'airport';
+
+    function haveAirports() {
+        return window.nav_list[KEY_AIRPORT] && window.nav_list[KEY_AIRPORT].length;
+    }
+
+    function filterNavlistAirports() {
+        var nav_list = window.nav_list;
+        var airports = nav_list[KEY_AIRPORT];
+
+        if (filter_airports) {
+            if (haveAirports() && (airports !== _filteredPorts)) {
+                _airports = airports;
+                // {"id":"KORD","icao":"ORD","pos":{"lat":41.978142,"lng":-87.9058},"title":"Chicago O'Hare International Airport (ORD/KORD)","size":2266603,"marker":null}
+                _filteredPorts = _airports.filter((port) =>
+                    interesting_airports.some((name) => port.title.toLowerCase().includes(name)) ||
+                    airport_codes.some((name) => port.icao.toLowerCase().includes(name))
+                );
+                
+                nav_list[KEY_AIRPORT] = _filteredPorts;
+            }
+        } else {
+            if (airports === _filteredPorts) {
+                nav_list[KEY_AIRPORT] = _airports;
+            }
+        }
+        console.log(interesting_airports, airport_codes, nav_list);
+        console.trace();
+    }
 
     function renderMapPinsOverride(renderMapPins) {
         window.renderMapPins = function (type, bounds, limit) {
-            if (type === "airport") {
-                var nav_list = window.nav_list;
-                if (filter_airports) {
-                    if (
-                        nav_list[type] &&
-                        nav_list[type].length &&
-                        nav_list[type] !== _filteredPorts
-                    ) {
-                        _airports = nav_list[type];
-                        // {"id":"KORD","icao":"ORD","pos":{"lat":41.978142,"lng":-87.9058},"title":"Chicago O'Hare International Airport (ORD/KORD)","size":2266603,"marker":null}
-                        _filteredPorts = _airports.filter(
-                            (port) =>
-                                interesting_airports.some((name) =>
-                                    port.title.toLowerCase().includes(name)
-                                ) ||
-                                airport_codes.some((name) =>
-                                    port.icao.toLowerCase().includes(name)
-                                )
-                        );
-                        nav_list[type] = _filteredPorts;
-                    }
-                } else {
-                    if (nav_list[type] === _filteredPorts) {
-                        nav_list[type] = _airports;
-                    }
-                }
+            if (type === KEY_AIRPORT) {
+                filterNavlistAirports();
             }
             renderMapPins(type, bounds, limit);
         };
 
-        doWhen(doAirports);
+        doWhen(() => { filterNavlistAirports(); doAirports() }, () => haveAirports() && airport_codes.length);
     }
     doWhen(renderMapPinsOverride, () => window.renderMapPins, true);
 
@@ -720,8 +741,9 @@ function GM_Main() {
         // var first_run = true;
         // var run_i = 0;
 
-        Object.keys(plane_list).forEach(function (index) {
+        Object.keys(plane_list).forEach((index) => {
             var selected = !hasSetup || is_selected(index);
+
             var elem = plane_list[index];
             /*
                         0: "4C3DAA"
@@ -744,13 +766,14 @@ function GM_Main() {
                         17: 0
                         18: "PNK"
                         */
+            if(Object.prototype.toString.call(elem) !== "[object Array]") {
+                return;
+            }
 
             var lat = elem[1],
                 long = elem[2],
                 radar = elem[7],
                 ac_type = elem[8],
-                na_from = !elem[11],
-                na_to = !elem[12],
                 callsign = elem[16];
 
             // ac_type, track, active, squawk, radar, callsign
@@ -781,27 +804,33 @@ function GM_Main() {
                     return;
                 }
 
-                switch (na_pref) {
-                    case "any":
-                        if (!na_from && !na_to) {
-                            return;
+                if(airport_pref) {
+
+                    const source = elem[11].toLowerCase() || 'na',
+                        dest = elem[12].toLowerCase() || 'na';
+                    const source_in_list = airport_filter.includes(source),
+                        dest_in_list = airport_filter.includes(dest);
+    
+                    switch (airport_pref) { 
+                        case 'source':
+                            if(!source_in_list) {
+                                return;
+                            }
+                            break;
+                        case 'dest':
+                            if(!dest_in_list) {
+                                return;
+                            }
+                        case 'both':
+                            if(!source_in_list || !dest_in_list) {
+                                return;
+                            }
+                        case 'any':
+                            if(!source_in_list && !dest_in_list) {
+                                return;
+                            }
+                            break;
                         }
-                        break;
-                    case "both":
-                        if (!na_from || !na_to) {
-                            return;
-                        }
-                        break;
-                    case "from":
-                        if (!na_from) {
-                            return;
-                        }
-                        break;
-                    case "to":
-                        if (!na_to) {
-                            return;
-                        }
-                        break;
                 }
 
                 if (!all_planes && !issa_okay_aircraft(alias, callsign)) {
